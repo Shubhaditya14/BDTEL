@@ -1,0 +1,96 @@
+HOSPITAL_NAME = "Hospital_A"
+ROUNDS = 5
+
+print(f"Starting {HOSPITAL_NAME}")
+
+import time
+
+import requests
+from sklearn.datasets import load_breast_cancer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+
+BASE_URL = "http://127.0.0.1:8000"
+UPLOAD_URL = f"{BASE_URL}/upload"
+
+# Load dataset
+data = load_breast_cancer()
+
+X = data.data[:200]
+y = data.target[:200]
+
+# Split data
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+
+def wait_for_round(round_num):
+    while True:
+        response = requests.get(f"{BASE_URL}/round")
+        server_round = response.json()["current_round"]
+
+        if server_round >= round_num:
+            return
+
+        print(f"Waiting for round {round_num}")
+        time.sleep(2)
+
+
+def wait_for_global_model(round_num):
+    while True:
+        response = requests.get(f"{BASE_URL}/global_model")
+        global_model = response.json()
+
+        if global_model.get("round", 0) >= round_num:
+            return global_model
+
+        print(f"Waiting for global model from round {round_num}")
+        time.sleep(2)
+
+
+for round_num in range(1, ROUNDS + 1):
+    wait_for_round(round_num)
+
+    print(f"\n===== ROUND {round_num} =====")
+
+    # Create model
+    model = LogisticRegression(max_iter=5000)
+
+    # Train
+    model.fit(X_train, y_train)
+
+    # Predict
+    predictions = model.predict(X_test)
+
+    # Accuracy
+    accuracy = accuracy_score(y_test, predictions)
+
+    weights = model.coef_.tolist()
+
+    hospital_update = {
+        "hospital": HOSPITAL_NAME,
+        "round": round_num,
+        "accuracy": float(accuracy),
+        "weights": weights
+    }
+
+    print("\nHospital Update")
+    print("----------------")
+    print(hospital_update)
+
+    print(f"{HOSPITAL_NAME} Accuracy: {accuracy:.4f}")
+
+    response = requests.post(
+        UPLOAD_URL,
+        json=hospital_update
+    )
+
+    print("\nServer Response:")
+    print(response.json())
+
+    global_model = wait_for_global_model(round_num)
+
+    print("\nDownloaded Global Model")
+    print(global_model)

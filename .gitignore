@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Logs and runtime files
+logs/
+*.log
+*.pid
+
+# Generated TrustFL artifacts
+server/storage/updates/
+server/storage/models/
+server/storage/metrics/*.csv
+server/data/
+
+# Local data/output scratch files
+test.txt
+*.tmp
+*.bak
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build/package artifacts
+build/
+dist/
+*.egg-info/
