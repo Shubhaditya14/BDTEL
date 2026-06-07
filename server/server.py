@@ -13,6 +13,7 @@ try:
     from .hdfs_storage import upload_global_model
     from .hdfs_storage import upload_metrics
     from .hdfs_storage import upload_update
+    from .hive_analytics import query_hive_analytics
     from .trust import calculate_trust
     from .trust import calculate_trust_components
 except ImportError:
@@ -22,6 +23,7 @@ except ImportError:
     from hdfs_storage import upload_global_model
     from hdfs_storage import upload_metrics
     from hdfs_storage import upload_update
+    from hive_analytics import query_hive_analytics
     from trust import calculate_trust
     from trust import calculate_trust_components
 
@@ -299,6 +301,11 @@ def analytics():
         "metrics": metrics,
         "global_metrics": global_metrics
     }
+
+
+@app.get("/hive_analytics")
+def hive_analytics():
+    return query_hive_analytics(METRICS_FILE)
 
 
 @app.get("/trust")

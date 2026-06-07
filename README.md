@@ -150,6 +150,7 @@ GET  /global_model             latest global model
 GET  /metrics                  local metrics history
 GET  /global_metrics           global accuracy history
 GET  /analytics                historical metrics and participation
+GET  /hive_analytics           Hive-backed AVG trust, AVG accuracy, top hospital
 GET  /trust                    current trust scores
 GET  /leaderboard              sorted trust leaderboard
 GET  /dashboard_data           dashboard summary payload
@@ -343,6 +344,60 @@ http://localhost:9870
 ```
 
 Navigate to `/trustfl` to show the stored updates, models, and metrics from the browser.
+
+## Hive Analytics
+
+Create and load the Hive table from the generated metrics CSV:
+
+```sql
+CREATE TABLE IF NOT EXISTS hospital_metrics(
+    round INT,
+    hospital STRING,
+    accuracy FLOAT,
+    trust FLOAT
+)
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
+STORED AS TEXTFILE
+TBLPROPERTIES ("skip.header.line.count"="1");
+
+LOAD DATA LOCAL INPATH 'server/storage/metrics/metrics.csv'
+OVERWRITE INTO TABLE hospital_metrics;
+```
+
+The FastAPI endpoint `GET /hive_analytics` refreshes this table and returns:
+
+```text
+AVG(trust)
+AVG(accuracy)
+Top trusted hospital
+```
+
+If Hive is not installed or not on `PATH`, the endpoint returns a clear unavailable message instead of breaking the dashboard.
+
+## Experiment Framework
+
+Run the malicious-node comparison:
+
+```bash
+python run_experiment.py
+```
+
+Output:
+
+```text
+FedAvg Accuracy: ...
+TrustFL Accuracy: ...
+```
+
+Results are stored in:
+
+```text
+experiments/results.json
+experiments/results.csv
+```
+
+The dashboard reads `experiments/results.json` and displays the FedAvg vs TrustFL comparison when the experiment has been run.
 
 ## Dashboard Demo Flow
 

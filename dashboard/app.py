@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import json
 import pandas as pd
 import requests
 import streamlit as st
@@ -13,6 +14,7 @@ SERVER_URL = "http://127.0.0.1:8000"
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 STORAGE_DIR = PROJECT_DIR / "server" / "storage"
 ARTIFACTS_DIR = PROJECT_DIR / "artifacts"
+EXPERIMENT_RESULTS_FILE = PROJECT_DIR / "experiments" / "results.json"
 METRICS_FILE = STORAGE_DIR / "metrics" / "metrics.csv"
 UPDATES_DIR = STORAGE_DIR / "updates"
 MODELS_DIR = STORAGE_DIR / "models"
@@ -85,9 +87,21 @@ def latest_from_metrics(df):
     return updates, trust_scores
 
 
+def load_experiment_results():
+    if not EXPERIMENT_RESULTS_FILE.exists():
+        return []
+
+    try:
+        with open(EXPERIMENT_RESULTS_FILE) as file:
+            return json.load(file)
+    except json.JSONDecodeError:
+        return []
+
+
 st.title("TrustFL Dashboard")
 
 df = load_metrics()
+experiment_results = load_experiment_results()
 update_files = sorted(UPDATES_DIR.glob("round_*/*.json")) if UPDATES_DIR.exists() else []
 model_files = sorted(MODELS_DIR.glob("global_round_*.json")) if MODELS_DIR.exists() else []
 artifact_update_files = (
@@ -138,6 +152,14 @@ statuses = get_json(
         "Hospital_B": "Offline",
         "Hospital_C": "Offline"
     }
+)
+hive_data = get_json(
+    "/hive_analytics",
+    {
+        "available": False,
+        "error": "FastAPI server unavailable."
+    },
+    timeout=20
 )
 
 hdfs_status = {
@@ -269,6 +291,34 @@ if st.button("Verify Live HDFS Connection"):
         st.error("Live HDFS Not Connected")
 
     st.json(live_hdfs_status)
+
+st.subheader("Hive Analytics")
+
+if hive_data.get("available"):
+    hive_col1, hive_col2, hive_col3 = st.columns(3)
+
+    with hive_col1:
+        st.metric(
+            "Hive AVG Trust",
+            f"{hive_data['average_trust']:.2f}"
+        )
+
+    with hive_col2:
+        st.metric(
+            "Hive AVG Accuracy",
+            f"{hive_data['average_accuracy']:.2f}"
+        )
+
+    with hive_col3:
+        st.metric(
+            "Top Trusted Hospital",
+            hive_data.get("top_trusted_hospital") or "-"
+        )
+else:
+    st.warning(
+        "Hive analytics unavailable. "
+        f"{hive_data.get('error', 'No details returned.')}"
+    )
 
 st.subheader("Hospital Metrics")
 
@@ -450,3 +500,20 @@ if trust_components:
     )
     st.subheader("Trust Score Breakdown")
     st.dataframe(component_df, hide_index=True)
+
+st.subheader("Experiment Results")
+
+if experiment_results:
+    experiment_df = pd.DataFrame([
+        {
+            "Algorithm": result["algorithm"],
+            "Final Accuracy": result["accuracy"]
+        }
+        for result in experiment_results
+    ])
+    st.dataframe(experiment_df, hide_index=True)
+    st.bar_chart(
+        experiment_df.set_index("Algorithm")["Final Accuracy"]
+    )
+else:
+    st.info("Run python run_experiment.py to generate results.")
