@@ -74,6 +74,7 @@ server/
   server.py
   trust.py
   hdfs_storage.py
+  state.json
   storage/
     updates/
     metrics/
@@ -81,6 +82,13 @@ server/
 
 dashboard/
   app.py
+
+artifacts/
+  round_1/
+    Hospital_A.json
+    Hospital_B.json
+    Hospital_C.json
+    global_model.json
 
 scripts/
   start_all.sh
@@ -114,10 +122,18 @@ For each round:
 The server calculates trust from two signals:
 
 ```text
-trust = 0.7 * accuracy + 0.3 * consistency
+trust =
+    0.7 * accuracy
+    + 0.3 * consistency
 ```
 
-Consistency is based on the standard deviation of a hospital's historical accuracy. A hospital with stable performance gets higher trust. A hospital with unstable or manipulated updates gets lower trust.
+Consistency is based on the standard deviation of a hospital's historical accuracy:
+
+```text
+consistency = 1 - np.std(historical_accuracies)
+```
+
+A stable and accurate hospital receives higher trust. Participation is still shown in the dashboard as an analytics metric, but it is not part of the Phase 2 trust formula.
 
 Hospital C is configured as the malicious demo client. It can lower accuracy and inject noisy weights, which makes the trust ranking visibly separate reliable hospitals from suspicious ones.
 
@@ -133,6 +149,7 @@ GET  /round                    current federated round
 GET  /global_model             latest global model
 GET  /metrics                  local metrics history
 GET  /global_metrics           global accuracy history
+GET  /analytics                historical metrics and participation
 GET  /trust                    current trust scores
 GET  /leaderboard              sorted trust leaderboard
 GET  /dashboard_data           dashboard summary payload
@@ -142,6 +159,26 @@ POST /malicious_demo           dashboard-controlled malicious demo toggle
 ```
 
 ## Storage Design
+
+The server writes runtime state atomically to:
+
+```text
+server/state.json
+```
+
+On startup it restores the current round, trust scores and components, global model, pending updates, metrics, and completed rounds. Restarting the server therefore continues from the last saved round.
+
+Each round also has a self-contained artifact directory:
+
+```text
+artifacts/round_1/
+  Hospital_A.json
+  Hospital_B.json
+  Hospital_C.json
+  global_model.json
+```
+
+This repository makes a training run reproducible and easier to audit or debug.
 
 Every hospital update is stored as JSON:
 
@@ -172,30 +209,30 @@ round,hospital,accuracy,trust
 
 ## HDFS Integration
 
-The project uses `/bdtelmvp` as the HDFS root:
+The project uses `/trustfl` as the HDFS root:
 
 ```text
-/bdtelmvp/updates
-/bdtelmvp/models
-/bdtelmvp/metrics
+/trustfl/updates
+/trustfl/models
+/trustfl/metrics
 ```
 
 Hospital updates are uploaded to:
 
 ```text
-/bdtelmvp/updates/round_N/Hospital_X.json
+/trustfl/updates/round_N/Hospital_X.json
 ```
 
 Global models are uploaded to:
 
 ```text
-/bdtelmvp/models/global_round_N.json
+/trustfl/models/global_round_N.json
 ```
 
 Metrics are uploaded to:
 
 ```text
-/bdtelmvp/metrics/metrics.csv
+/trustfl/metrics/metrics.csv
 ```
 
 This gives the project a Hadoop-backed audit trail for federated learning artifacts.
@@ -218,9 +255,9 @@ pip install fastapi uvicorn streamlit streamlit-autorefresh scikit-learn pandas 
 If using HDFS, make sure Hadoop is running and the project folders exist:
 
 ```bash
-hdfs dfs -mkdir -p /bdtelmvp/updates
-hdfs dfs -mkdir -p /bdtelmvp/models
-hdfs dfs -mkdir -p /bdtelmvp/metrics
+hdfs dfs -mkdir -p /trustfl/updates
+hdfs dfs -mkdir -p /trustfl/models
+hdfs dfs -mkdir -p /trustfl/metrics
 ```
 
 ## Running The Demo
@@ -253,7 +290,7 @@ Before a clean demo:
 ./scripts/stop_reset.sh
 ```
 
-This stops FastAPI, Streamlit, and hospital clients, clears ports `8000` and `8501`, removes generated local artifacts, and clears generated HDFS files under `/bdtelmvp`.
+This stops FastAPI, Streamlit, and hospital clients, clears ports `8000` and `8501`, removes generated local artifacts, and clears generated HDFS files under `/trustfl`.
 
 ## Verifying Local Artifacts
 
@@ -278,25 +315,25 @@ metrics.csv with round, hospital, accuracy, and trust rows
 Check the HDFS root:
 
 ```bash
-hdfs dfs -ls /bdtelmvp
+hdfs dfs -ls /trustfl
 ```
 
 Show hospital updates:
 
 ```bash
-hdfs dfs -ls -R /bdtelmvp/updates
+hdfs dfs -ls -R /trustfl/updates
 ```
 
 Show global models:
 
 ```bash
-hdfs dfs -ls /bdtelmvp/models
+hdfs dfs -ls /trustfl/models
 ```
 
 Show metrics:
 
 ```bash
-hdfs dfs -cat /bdtelmvp/metrics/metrics.csv
+hdfs dfs -cat /trustfl/metrics/metrics.csv
 ```
 
 Optional Hadoop NameNode UI:
@@ -305,7 +342,7 @@ Optional Hadoop NameNode UI:
 http://localhost:9870
 ```
 
-Navigate to `/bdtelmvp` to show the stored updates, models, and metrics from the browser.
+Navigate to `/trustfl` to show the stored updates, models, and metrics from the browser.
 
 ## Dashboard Demo Flow
 
@@ -317,7 +354,7 @@ Navigate to `/bdtelmvp` to show the stored updates, models, and metrics from the
 6. Show accuracy and trust evolution charts.
 7. Show recent JSON updates and global model repository.
 8. Click live HDFS verification to show distributed storage status.
-9. Open Hadoop UI at `http://localhost:9870` and browse `/bdtelmvp`.
+9. Open Hadoop UI at `http://localhost:9870` and browse `/trustfl`.
 
 ## What This Demonstrates To Recruiters
 

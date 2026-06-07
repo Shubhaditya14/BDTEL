@@ -5,6 +5,7 @@ print(f"Starting {HOSPITAL_NAME}")
 
 import time
 
+import numpy as np
 import requests
 from sklearn.datasets import load_breast_cancer
 from sklearn.linear_model import LogisticRegression
@@ -29,7 +30,11 @@ X_train, X_test, y_train, y_test = train_test_split(
 def wait_for_round(round_num):
     while True:
         response = requests.get(f"{BASE_URL}/round")
-        server_round = response.json()["current_round"]
+        round_data = response.json()
+        server_round = round_data.get(
+            "round",
+            round_data["current_round"]
+        )
 
         if server_round >= round_num:
             return
@@ -50,13 +55,24 @@ def wait_for_global_model(round_num):
         time.sleep(2)
 
 
+global_model = None
+
 for round_num in range(1, ROUNDS + 1):
     wait_for_round(round_num)
 
     print(f"\n===== ROUND {round_num} =====")
 
     # Create model
-    model = LogisticRegression(max_iter=5000)
+    model = LogisticRegression(
+        max_iter=5000,
+        warm_start=True
+    )
+
+    if global_model is not None:
+        model.coef_ = np.array(global_model["weights"])
+        model.intercept_ = np.array(global_model["bias"])
+        model.classes_ = np.unique(y_train)
+        model.n_features_in_ = X_train.shape[1]
 
     # Train
     model.fit(X_train, y_train)
@@ -68,12 +84,14 @@ for round_num in range(1, ROUNDS + 1):
     accuracy = accuracy_score(y_test, predictions)
 
     weights = model.coef_.tolist()
+    bias = model.intercept_.tolist()
 
     hospital_update = {
         "hospital": HOSPITAL_NAME,
         "round": round_num,
         "accuracy": float(accuracy),
-        "weights": weights
+        "weights": weights,
+        "bias": bias
     }
 
     print("\nHospital Update")

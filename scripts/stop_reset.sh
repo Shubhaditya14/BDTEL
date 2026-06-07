@@ -35,13 +35,15 @@ echo "Clearing local generated storage..."
 find server/storage/updates -mindepth 1 ! -name ".DS_Store" -exec rm -rf {} + 2>/dev/null || true
 find server/storage/models -mindepth 1 ! -name ".DS_Store" -exec rm -rf {} + 2>/dev/null || true
 rm -f server/storage/metrics/metrics.csv
+rm -f server/state.json server/state.json.tmp
+rm -rf artifacts
 rm -f logs/server.log logs/dashboard.log 2>/dev/null || true
 
 if command -v hdfs >/dev/null 2>&1; then
-    echo "Clearing HDFS generated storage under /bdtelmvp..."
-    hdfs dfs -rm -r -f '/bdtelmvp/updates/*' 2>/dev/null || true
-    hdfs dfs -rm -r -f '/bdtelmvp/models/*' 2>/dev/null || true
-    hdfs dfs -rm -r -f '/bdtelmvp/metrics/*' 2>/dev/null || true
+    echo "Clearing HDFS generated storage under /trustfl..."
+    hdfs dfs -rm -r -f '/trustfl/updates/*' 2>/dev/null || true
+    hdfs dfs -rm -r -f '/trustfl/models/*' 2>/dev/null || true
+    hdfs dfs -rm -r -f '/trustfl/metrics/*' 2>/dev/null || true
 fi
 
 echo "Reset complete."

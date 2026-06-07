@@ -8,14 +8,22 @@ from fastapi import FastAPI
 
 try:
     from .hdfs_storage import count_hdfs_files
+    from .hdfs_storage import HDFS_ROOT
     from .hdfs_storage import list_hdfs_path
-    from .hdfs_storage import upload_to_hdfs
+    from .hdfs_storage import upload_global_model
+    from .hdfs_storage import upload_metrics
+    from .hdfs_storage import upload_update
     from .trust import calculate_trust
+    from .trust import calculate_trust_components
 except ImportError:
     from hdfs_storage import count_hdfs_files
+    from hdfs_storage import HDFS_ROOT
     from hdfs_storage import list_hdfs_path
-    from hdfs_storage import upload_to_hdfs
+    from hdfs_storage import upload_global_model
+    from hdfs_storage import upload_metrics
+    from hdfs_storage import upload_update
     from trust import calculate_trust
+    from trust import calculate_trust_components
 
 app = FastAPI()
 
@@ -26,16 +34,19 @@ EXPECTED_HOSPITAL_NAMES = [
     "Hospital_C"
 ]
 SERVER_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SERVER_DIR.parent
 STORAGE_DIR = SERVER_DIR / "storage"
 UPDATES_DIR = STORAGE_DIR / "updates"
 METRICS_DIR = STORAGE_DIR / "metrics"
 MODELS_DIR = STORAGE_DIR / "models"
 METRICS_FILE = METRICS_DIR / "metrics.csv"
-HDFS_ROOT = "/bdtelmvp"
+STATE_FILE = SERVER_DIR / "state.json"
+ARTIFACTS_DIR = PROJECT_DIR / "artifacts"
 
 updates = {}
 trust_history = {}
 trust_scores = {}
+trust_components = {}
 global_model = None
 current_round = 1
 metrics = []
@@ -43,6 +54,110 @@ global_metrics = []
 malicious_demo_enabled = False
 state_lock = threading.Lock()
 aggregated_rounds = set()
+
+
+def save_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = path.with_suffix(f"{path.suffix}.tmp")
+
+    with open(temporary_file, "w") as file:
+        json.dump(data, file, indent=4)
+
+    temporary_file.replace(path)
+
+
+def save_state():
+    state = {
+        "current_round": current_round,
+        "trust_scores": trust_scores,
+        "trust_components": trust_components,
+        "global_model": global_model,
+        "trust_history": trust_history,
+        "updates": list(updates.values()),
+        "metrics": metrics,
+        "global_metrics": global_metrics,
+        "aggregated_rounds": sorted(aggregated_rounds)
+    }
+    save_json(STATE_FILE, state)
+
+
+def load_state():
+    global current_round
+    global global_model
+
+    if not STATE_FILE.exists():
+        return
+
+    try:
+        with open(STATE_FILE) as file:
+            state = json.load(file)
+    except (json.JSONDecodeError, OSError) as error:
+        print(f"Could not load state: {error}")
+        return
+
+    current_round = int(state.get("current_round", 1))
+    global_model = state.get("global_model")
+    trust_scores.update(state.get("trust_scores", {}))
+    trust_components.update(state.get("trust_components", {}))
+    trust_history.update(state.get("trust_history", {}))
+    metrics.extend(state.get("metrics", []))
+    global_metrics.extend(state.get("global_metrics", []))
+    aggregated_rounds.update(state.get("aggregated_rounds", []))
+
+    for update in state.get("updates", []):
+        updates[(update["hospital"], update["round"])] = update
+
+    latest_updates = {}
+
+    for (hospital, round_num), update in updates.items():
+        if (
+            hospital not in latest_updates
+            or round_num > latest_updates[hospital]["round"]
+        ):
+            latest_updates[hospital] = update
+
+    trust_scores.clear()
+    trust_components.clear()
+
+    for hospital, update in latest_updates.items():
+        score_components = calculate_trust_components(
+            update,
+            trust_history
+        )
+        trust_components[hospital] = score_components
+        trust_scores[hospital] = score_components["trust"]
+
+    print(f"Restored server state at round {current_round}")
+
+
+def participation_count(hospital):
+    return len({
+        round_num
+        for stored_hospital, round_num in updates
+        if stored_hospital == hospital
+    })
+
+
+def write_metrics_csv():
+    METRICS_DIR.mkdir(parents=True, exist_ok=True)
+
+    with open(METRICS_FILE, "w", newline="") as file:
+        fieldnames = [
+            "round",
+            "hospital",
+            "accuracy",
+            "trust"
+        ]
+        writer = csv.DictWriter(
+            file,
+            fieldnames=fieldnames,
+            extrasaction="ignore"
+        )
+        writer.writeheader()
+        writer.writerows(metrics)
+
+
+load_state()
 
 
 @app.get("/")
@@ -59,73 +174,52 @@ def upload(update: dict):
 def process_upload(update: dict):
     hospital = update["hospital"]
     round_num = update["round"]
+    update_key = (hospital, round_num)
+    is_new_update = update_key not in updates
 
-    updates[(hospital, round_num)] = update
+    updates[update_key] = update
 
     if hospital not in trust_history:
         trust_history[hospital] = []
 
-    trust_history[hospital].append(
-        update["accuracy"]
+    if is_new_update:
+        trust_history[hospital].append(
+            update["accuracy"]
+        )
+
+    score_components = calculate_trust_components(
+        update,
+        trust_history
     )
+    trust_components[hospital] = score_components
+    trust_scores[hospital] = score_components["trust"]
+    trust = score_components["trust"]
 
-    trust_scores[hospital] = float(
-        calculate_trust(update, trust_history)
-    )
-
-    trust = trust_scores[hospital]
-
-    metrics.append({
-        "hospital": hospital,
-        "accuracy": update["accuracy"],
-        "round": round_num,
-        "trust": trust
-    })
+    if is_new_update:
+        metrics.append({
+            "hospital": hospital,
+            "accuracy": update["accuracy"],
+            "round": round_num,
+            "consistency": score_components["consistency"],
+            "trust": trust
+        })
 
     round_dir = UPDATES_DIR / f"round_{round_num}"
     round_dir.mkdir(parents=True, exist_ok=True)
-
-    with open(
-        round_dir / f"{hospital}.json",
-        "w"
-    ) as f:
-        json.dump(update, f, indent=4)
-
     update_file = round_dir / f"{hospital}.json"
-    upload_to_hdfs(
-        update_file,
-        f"{HDFS_ROOT}/updates/round_{round_num}/"
+    save_json(update_file, update)
+
+    artifact_round_dir = ARTIFACTS_DIR / f"round_{round_num}"
+    save_json(
+        artifact_round_dir / f"{hospital}.json",
+        update
     )
 
-    METRICS_DIR.mkdir(parents=True, exist_ok=True)
-    write_header = not METRICS_FILE.exists()
+    upload_update(update_file, round_num)
 
-    with open(
-        METRICS_FILE,
-        "a",
-        newline=""
-    ) as f:
-        writer = csv.writer(f)
+    write_metrics_csv()
 
-        if write_header:
-            writer.writerow([
-                "round",
-                "hospital",
-                "accuracy",
-                "trust"
-            ])
-
-        writer.writerow([
-            round_num,
-            hospital,
-            update["accuracy"],
-            trust
-        ])
-
-    upload_to_hdfs(
-        METRICS_FILE,
-        f"{HDFS_ROOT}/metrics/"
-    )
+    upload_metrics(METRICS_FILE)
 
     print(f"Received {hospital} Round {round_num}")
 
@@ -134,13 +228,20 @@ def process_upload(update: dict):
         for (stored_hospital, stored_round), update in updates.items()
         if stored_round == round_num
     ]
+    submitted_hospitals = {
+        update["hospital"]
+        for update in round_updates
+    }
 
     if (
         round_num == current_round
         and len(round_updates) == EXPECTED_HOSPITALS
+        and submitted_hospitals == set(EXPECTED_HOSPITAL_NAMES)
         and round_num not in aggregated_rounds
     ):
         run_aggregation(round_num)
+
+    save_state()
 
     return {"message": "Update received"}
 
@@ -169,6 +270,7 @@ def status():
 def round_info():
 
     return {
+        "round": current_round,
         "current_round": current_round
     }
 
@@ -181,6 +283,22 @@ def get_metrics():
 @app.get("/global_metrics")
 def get_global_metrics():
     return global_metrics
+
+
+@app.get("/analytics")
+def analytics():
+    participation = {
+        hospital: participation_count(hospital)
+        for hospital in EXPECTED_HOSPITAL_NAMES
+    }
+
+    return {
+        "current_round": current_round,
+        "completed_rounds": sorted(aggregated_rounds),
+        "participation": participation,
+        "metrics": metrics,
+        "global_metrics": global_metrics
+    }
 
 
 @app.get("/trust")
@@ -240,7 +358,8 @@ def dashboard_data():
     return {
         "round": current_round,
         "updates": latest_updates,
-        "trust_scores": get_display_trust_scores()
+        "trust_scores": get_display_trust_scores(),
+        "trust_components": trust_components
     }
 
 
@@ -258,7 +377,12 @@ def leaderboard():
     scores = [
         {
             "hospital": hospital,
-            "trust": float(calculate_trust(update, trust_history))
+            "trust": float(
+                calculate_trust(
+                    update,
+                    trust_history
+                )
+            )
         }
         for hospital, update in latest_updates.items()
     ]
@@ -324,12 +448,19 @@ def run_aggregation(round_num=None):
         np.array(update["weights"])
         for update in round_updates
     ]
+    biases = [
+        np.array(update["bias"])
+        for update in round_updates
+    ]
 
     trust_scores = []
 
     for update in round_updates:
         trust_scores.append(
-            calculate_trust(update, trust_history)
+            calculate_trust(
+                update,
+                trust_history
+            )
         )
 
     print("Trust Scores")
@@ -337,18 +468,27 @@ def run_aggregation(round_num=None):
     for update in round_updates:
         print(
             update["hospital"],
-            calculate_trust(update, trust_history)
+            calculate_trust(
+                update,
+                trust_history
+            )
         )
 
     trust_scores = np.array(trust_scores)
 
     weighted_sum = np.zeros_like(weights[0])
+    weighted_bias_sum = np.zeros_like(biases[0])
 
-    for w, t in zip(weights, trust_scores):
+    for w, b, t in zip(weights, biases, trust_scores):
         weighted_sum += w * t
+        weighted_bias_sum += b * t
 
     global_weights = (
         weighted_sum /
+        trust_scores.sum()
+    )
+    global_bias = (
+        weighted_bias_sum /
         trust_scores.sum()
     )
 
@@ -366,30 +506,25 @@ def run_aggregation(round_num=None):
 
     global_model = {
         "round": round_num,
-        "weights": global_weights.tolist()
+        "weights": global_weights.tolist(),
+        "bias": global_bias.tolist()
     }
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
     model_file = MODELS_DIR / f"global_round_{round_num}.json"
 
-    with open(
-        model_file,
-        "w"
-    ) as f:
-        json.dump(
-            global_model,
-            f,
-            indent=4
-        )
-
-    upload_to_hdfs(
-        model_file,
-        f"{HDFS_ROOT}/models/"
+    save_json(model_file, global_model)
+    save_json(
+        ARTIFACTS_DIR / f"round_{round_num}" / "global_model.json",
+        global_model
     )
+
+    upload_global_model(model_file)
 
     aggregated_rounds.add(round_num)
     current_round += 1
+    save_state()
 
     print("Global Model Generated")
 
@@ -400,7 +535,10 @@ def run_aggregation(round_num=None):
             trust_scores.tolist(),
 
         "global_weights":
-            global_weights.tolist()
+            global_weights.tolist(),
+
+        "global_bias":
+            global_bias.tolist()
     }
 
 

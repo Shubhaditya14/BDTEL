@@ -12,6 +12,7 @@ except ImportError:
 SERVER_URL = "http://127.0.0.1:8000"
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 STORAGE_DIR = PROJECT_DIR / "server" / "storage"
+ARTIFACTS_DIR = PROJECT_DIR / "artifacts"
 METRICS_FILE = STORAGE_DIR / "metrics" / "metrics.csv"
 UPDATES_DIR = STORAGE_DIR / "updates"
 MODELS_DIR = STORAGE_DIR / "models"
@@ -89,13 +90,24 @@ st.title("TrustFL Dashboard")
 df = load_metrics()
 update_files = sorted(UPDATES_DIR.glob("round_*/*.json")) if UPDATES_DIR.exists() else []
 model_files = sorted(MODELS_DIR.glob("global_round_*.json")) if MODELS_DIR.exists() else []
+artifact_update_files = (
+    sorted(ARTIFACTS_DIR.glob("round_*/Hospital_*.json"))
+    if ARTIFACTS_DIR.exists()
+    else []
+)
+artifact_model_files = (
+    sorted(ARTIFACTS_DIR.glob("round_*/global_model.json"))
+    if ARTIFACTS_DIR.exists()
+    else []
+)
 
 server_data = get_json(
     "/dashboard_data",
     {
         "round": 1,
         "updates": {},
-        "trust_scores": {}
+        "trust_scores": {},
+        "trust_components": {}
     }
 )
 
@@ -103,6 +115,7 @@ csv_updates, csv_trust_scores = latest_from_metrics(df)
 
 updates = server_data.get("updates") or csv_updates
 trust_scores = server_data.get("trust_scores") or csv_trust_scores
+trust_components = server_data.get("trust_components") or {}
 
 if not updates and csv_updates:
     updates = csv_updates
@@ -147,6 +160,8 @@ latest_global_accuracy = 0
 if not global_df.empty:
     latest_global_accuracy = global_df.iloc[-1]["global_accuracy"]
 
+st.header("System Overview")
+
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
@@ -171,8 +186,8 @@ with col4:
 st.caption(
     f"Metrics source: {METRICS_FILE} | "
     f"rows: {len(df)} | "
-    f"updates: {len(update_files)} | "
-    f"models: {len(model_files)}"
+    f"artifacts: {len(artifact_update_files)} updates, "
+    f"{len(artifact_model_files)} models"
 )
 
 if df.empty:
@@ -197,12 +212,17 @@ server_data = get_json(
     {
         "round": current_round,
         "updates": updates,
-        "trust_scores": trust_scores
+        "trust_scores": trust_scores,
+        "trust_components": trust_components
     }
 )
 
 updates = server_data.get("updates") or updates
 trust_scores = server_data.get("trust_scores") or trust_scores
+trust_components = (
+    server_data.get("trust_components")
+    or trust_components
+)
 
 if not updates and csv_updates:
     updates = csv_updates
@@ -266,34 +286,59 @@ else:
 
 st.subheader("Recent Updates")
 
-if UPDATES_DIR.exists():
-    if update_files:
-        for update_file in sorted(update_files, reverse=True)[:10]:
+if ARTIFACTS_DIR.exists():
+    if artifact_update_files:
+        for update_file in sorted(
+            artifact_update_files,
+            reverse=True
+        )[:10]:
             st.write(
                 f"{update_file.stem} - "
                 f"{update_file.parent.name.replace('_', ' ').title()}"
             )
     else:
-        st.info("No saved hospital updates yet.")
+        st.info("No hospital artifacts yet.")
 else:
-    st.info("No update storage yet.")
+    st.info("No artifact repository yet.")
 
 st.subheader("Global Models")
 
-if MODELS_DIR.exists():
-    if model_files:
-        for model_file in model_files:
-            round_name = model_file.stem.replace(
-                "global_round_",
-                "Round "
+if ARTIFACTS_DIR.exists():
+    if artifact_model_files:
+        for model_file in artifact_model_files:
+            st.write(
+                model_file.parent.name.replace("_", " ").title()
             )
-            st.write(round_name)
     else:
-        st.info("No saved global models yet.")
+        st.info("No global model artifacts yet.")
 else:
-    st.info("No model storage yet.")
+    st.info("No artifact repository yet.")
 
-st.subheader("Round vs Accuracy")
+st.subheader("Artifact Browser")
+
+if ARTIFACTS_DIR.exists():
+    round_dirs = sorted(
+        [
+            path
+            for path in ARTIFACTS_DIR.glob("round_*")
+            if path.is_dir()
+        ],
+        key=lambda path: int(path.name.split("_")[-1])
+    )
+
+    if round_dirs:
+        for round_dir in round_dirs:
+            with st.expander(
+                round_dir.name.replace("_", " ").title()
+            ):
+                for artifact in sorted(round_dir.glob("*.json")):
+                    st.write(artifact.name)
+    else:
+        st.info("No round artifacts yet.")
+else:
+    st.info("No artifact repository yet.")
+
+st.subheader("Accuracy Evolution")
 
 if not df.empty:
     st.line_chart(
@@ -301,6 +346,45 @@ if not df.empty:
     )
 else:
     st.info("No metrics yet.")
+
+st.subheader("Round History")
+
+if not df.empty:
+    round_history = (
+        df.groupby("round")
+        .agg(
+            participating_hospitals=("hospital", "nunique"),
+            average_accuracy=("accuracy", "mean"),
+            average_trust=("trust", "mean")
+        )
+        .reset_index()
+    )
+    st.dataframe(round_history, hide_index=True)
+else:
+    st.info("No completed rounds yet.")
+
+st.subheader("Participation")
+
+if not df.empty:
+    completed_rounds = max(int(df["round"].max()), 1)
+    participation_df = (
+        df.groupby("hospital")["round"]
+        .nunique()
+        .rename("rounds_participated")
+        .reset_index()
+    )
+    participation_df["participation_rate"] = (
+        participation_df["rounds_participated"]
+        / completed_rounds
+    )
+    st.dataframe(participation_df, hide_index=True)
+    st.bar_chart(
+        participation_df.set_index("hospital")[
+            "rounds_participated"
+        ]
+    )
+else:
+    st.info("No participation history yet.")
 
 st.subheader("Trust Evolution")
 
@@ -339,13 +423,16 @@ if not global_df.empty:
 else:
     st.info("No global accuracy yet.")
 
-trust_df = pd.DataFrame(
-    list(trust_scores.items()),
-    columns=[
-        "Hospital",
-        "Trust"
-    ]
-)
+leaderboard_rows = []
+
+for hospital, info in updates.items():
+    leaderboard_rows.append({
+        "Hospital": hospital,
+        "Trust": trust_scores.get(hospital, 0),
+        "Accuracy": info.get("accuracy", 0)
+    })
+
+trust_df = pd.DataFrame(leaderboard_rows)
 
 if not trust_df.empty:
     trust_df = trust_df.sort_values(
@@ -353,6 +440,13 @@ if not trust_df.empty:
         ascending=False
     )
 
-st.subheader("Trust Ranking")
+st.subheader("Hospital Leaderboard")
 
-st.dataframe(trust_df)
+st.dataframe(trust_df, hide_index=True)
+
+if trust_components:
+    component_df = pd.DataFrame(
+        list(trust_components.values())
+    )
+    st.subheader("Trust Score Breakdown")
+    st.dataframe(component_df, hide_index=True)

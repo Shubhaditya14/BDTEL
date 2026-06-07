@@ -33,6 +33,9 @@ server/storage/updates/
 server/storage/models/
 server/storage/metrics/*.csv
 server/data/
+server/state.json
+server/state.json.tmp
+artifacts/
 
 # Local data/output scratch files
 test.txt
